@@ -8,6 +8,8 @@
 
 **This is a GitHub Copilot CLI hands-on workshop.** The goal is NOT to have participants write code manually, but to learn how to effectively use GitHub Copilot CLI to generate code and build a complete visualization application.
 
+**The primary objective is to master GitHub Copilot CLI usage, especially the `/plan` to implementation workflow. The heatmap visualization is just a practical example for learning.**
+
 ## ⚠️ Workshop Template - Implementation Guidelines
 
 **Participants are expected to create `index.html` by leveraging GitHub Copilot CLI.**
