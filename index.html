@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>日本人口ヒートマップ</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #0f172a;
+      --subtle: #475569;
+      --border: #dbe2ea;
+      --accent: #0369a1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    .container {
+      max-width: 1100px;
+      margin: 24px auto;
+      padding: 0 16px 32px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 1.6rem;
+    }
+    p {
+      margin: 0 0 12px;
+      color: var(--subtle);
+      line-height: 1.5;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    label {
+      font-weight: 600;
+    }
+    select {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 1rem;
+      background: #fff;
+    }
+    #status {
+      color: var(--accent);
+      font-weight: 600;
+      min-height: 1.2em;
+    }
+    #map {
+      width: 100%;
+      height: auto;
+      display: block;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .legend-wrap {
+      margin-top: 12px;
+    }
+    .legend-title {
+      margin-bottom: 6px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--subtle);
+    }
+    #tooltip {
+      position: fixed;
+      pointer-events: none;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.92);
+      color: #fff;
+      font-size: 0.9rem;
+      line-height: 1.4;
+      visibility: hidden;
+      transform: translate(10px, 10px);
+      white-space: nowrap;
+      z-index: 999;
+    }
+    .footnote {
+      margin-top: 10px;
+      font-size: 0.85rem;
+      color: var(--subtle);
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <section class="card">
+      <h1>日本の都道府県別人口ヒートマップ</h1>
+      <p>年を切り替えると、都道府県ごとの人口に応じて色が更新されます。</p>
+
+      <div class="controls">
+        <label for="year-select">表示年:</label>
+        <select id="year-select" aria-label="表示年"></select>
+        <span id="status"></span>
+      </div>
+
+      <svg id="map" viewBox="0 0 960 640" role="img" aria-label="日本地図の人口ヒートマップ"></svg>
+
+      <div class="legend-wrap">
+        <div class="legend-title">人口（人）</div>
+        <svg id="legend" width="960" height="56" aria-hidden="true"></svg>
+      </div>
+
+      <div class="footnote">
+        人口データ: <code>data/population.json</code>（e-Stat国勢調査） / 地図データ:
+        <a href="https://github.com/dataofjapan/land" target="_blank" rel="noopener noreferrer">dataofjapan/land</a>
+      </div>
+    </section>
+  </main>
+
+  <div id="tooltip"></div>
+
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script>
+    const POPULATION_LOCAL_URL = "data/population.json";
+    const POPULATION_FALLBACK_URL = "https://raw.githubusercontent.com/DaBo-jp/handson-j-heatmap/main/data/population.json";
+    const GEOJSON_URL = "https://raw.githubusercontent.com/dataofjapan/land/master/japan.geojson";
+
+    const MAP_WIDTH = 960;
+    const MAP_HEIGHT = 640;
+    const MARGIN = 16;
+    const EMPTY_COLOR = "#e2e8f0";
+
+    const yearSelect = document.getElementById("year-select");
+    const statusEl = document.getElementById("status");
+    const tooltipEl = document.getElementById("tooltip");
+
+    const svg = d3.select("#map");
+    const mapLayer = svg.append("g").attr("transform", `translate(${MARGIN}, ${MARGIN})`);
+    const legendSvg = d3.select("#legend");
+
+    const formatPopulation = d3.format(",");
+
+    function normalizePrefCode(id) {
+      return String(id).padStart(2, "0");
+    }
+
+    function toPopulationMapByYear(populationJson) {
+      const mapByYear = new Map();
+      for (const [year, entries] of Object.entries(populationJson)) {
+        const byPref = new Map();
+        for (const entry of entries) {
+          byPref.set(normalizePrefCode(entry.id), entry);
+        }
+        mapByYear.set(year, byPref);
+      }
+      return mapByYear;
+    }
+
+    async function loadPopulationData() {
+      try {
+        const data = await d3.json(POPULATION_LOCAL_URL);
+        statusEl.textContent = "";
+        return data;
+      } catch (error) {
+        statusEl.textContent = "ローカルJSONの読み込みに失敗したため、オンラインデータを使用しています。";
+        return d3.json(POPULATION_FALLBACK_URL);
+      }
+    }
+
+    function renderLegend(scale, min, max) {
+      legendSvg.selectAll("*").remove();
+
+      const gradientId = "legend-gradient";
+      const defs = legendSvg.append("defs");
+      const gradient = defs.append("linearGradient")
+        .attr("id", gradientId)
+        .attr("x1", "0%")
+        .attr("x2", "100%")
+        .attr("y1", "0%")
+        .attr("y2", "0%");
+
+      const steps = 10;
+      for (let i = 0; i <= steps; i += 1) {
+        const t = i / steps;
+        const value = min + (max - min) * t;
+        gradient.append("stop")
+          .attr("offset", `${t * 100}%`)
+          .attr("stop-color", scale(value));
+      }
+
+      const x = d3.scaleLinear().domain([min, max]).range([40, MAP_WIDTH - 40]);
+      const axis = d3.axisBottom(x).ticks(6).tickFormat((d) => d3.format(",")(d));
+
+      legendSvg.append("rect")
+        .attr("x", 40)
+        .attr("y", 8)
+        .attr("width", MAP_WIDTH - 80)
+        .attr("height", 12)
+        .attr("rx", 6)
+        .attr("fill", `url(#${gradientId})`);
+
+      legendSvg.append("g")
+        .attr("transform", "translate(0, 28)")
+        .call(axis)
+        .call((g) => g.select(".domain").attr("stroke", "#64748b"))
+        .call((g) => g.selectAll("line").attr("stroke", "#94a3b8"))
+        .call((g) => g.selectAll("text").attr("fill", "#475569").attr("font-size", 11));
+    }
+
+    function showTooltip(event, entry) {
+      tooltipEl.style.visibility = "visible";
+      tooltipEl.textContent = `${entry.name}: ${formatPopulation(entry.population)} 人`;
+      tooltipEl.style.left = `${event.clientX}px`;
+      tooltipEl.style.top = `${event.clientY}px`;
+    }
+
+    function hideTooltip() {
+      tooltipEl.style.visibility = "hidden";
+    }
+
+    async function main() {
+      const [populationJson, geoJson] = await Promise.all([
+        loadPopulationData(),
+        d3.json(GEOJSON_URL),
+      ]);
+
+      const years = Object.keys(populationJson).sort((a, b) => Number(b) - Number(a));
+      const populationByYear = toPopulationMapByYear(populationJson);
+
+      yearSelect.innerHTML = "";
+      for (const year of years) {
+        const option = document.createElement("option");
+        option.value = year;
+        option.textContent = `${year}年`;
+        yearSelect.appendChild(option);
+      }
+
+      const projection = d3.geoMercator().fitSize(
+        [MAP_WIDTH - MARGIN * 2, MAP_HEIGHT - MARGIN * 2],
+        geoJson
+      );
+      const path = d3.geoPath(projection);
+
+      const prefecturePaths = mapLayer.selectAll("path")
+        .data(geoJson.features)
+        .join("path")
+        .attr("d", path)
+        .attr("stroke", "#ffffff")
+        .attr("stroke-width", 1)
+        .attr("fill", EMPTY_COLOR);
+
+      function updateMap(year) {
+        const dataByPref = populationByYear.get(year);
+        const populations = Array.from(dataByPref.values(), (d) => d.population);
+        const minPopulation = d3.min(populations);
+        const maxPopulation = d3.max(populations);
+
+        const colorScale = d3.scaleSequential(d3.interpolateYlOrRd)
+          .domain([minPopulation, maxPopulation]);
+
+        prefecturePaths
+          .attr("fill", (feature) => {
+            const prefCode = normalizePrefCode(feature.properties.id);
+            const entry = dataByPref.get(prefCode);
+            return entry ? colorScale(entry.population) : EMPTY_COLOR;
+          })
+          .on("mousemove", (event, feature) => {
+            const prefCode = normalizePrefCode(feature.properties.id);
+            const entry = dataByPref.get(prefCode);
+            if (!entry) {
+              hideTooltip();
+              return;
+            }
+            showTooltip(event, entry);
+          })
+          .on("mouseleave", hideTooltip);
+
+        renderLegend(colorScale, minPopulation, maxPopulation);
+      }
+
+      const initialYear = years[0];
+      yearSelect.value = initialYear;
+      updateMap(initialYear);
+
+      yearSelect.addEventListener("change", (event) => {
+        updateMap(event.target.value);
+      });
+    }
+
+    main().catch((error) => {
+      statusEl.textContent = "データの読み込みに失敗しました。ネットワーク接続を確認してください。";
+      console.error(error);
+    });
+  </script>
+</body>
+</html>
